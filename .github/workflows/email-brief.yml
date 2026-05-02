@@ -1,0 +1,79 @@
+# Emails the most recent file in briefs/ to shgoetze@gmail.com via Resend.
+#
+# Required repository secret (Settings -> Secrets and variables -> Actions):
+#   RESEND_API_KEY  API key from https://resend.com/api-keys (send-only scope recommended)
+#
+# Optional repository secret:
+#   MAIL_FROM       Verified sender address on your Resend domain.
+#                   If unset, defaults to onboarding@resend.dev, which only
+#                   delivers to the email that owns the Resend account.
+#                   Sign up to Resend with shgoetze@gmail.com to use the default.
+#
+# Triggers:
+#   - Push to main that touches briefs/*.md (auto-send on merge)
+#   - Manual run via "Run workflow" (optionally pass a specific brief path)
+
+name: Email Daily Brief
+
+on:
+  push:
+    branches: [main]
+    paths: ['briefs/*.md']
+  workflow_dispatch:
+    inputs:
+      brief_path:
+        description: 'Path to a specific brief (defaults to most recent in briefs/)'
+        required: false
+        default: ''
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve brief file
+        id: brief
+        run: |
+          set -euo pipefail
+          INPUT="${{ github.event.inputs.brief_path }}"
+          if [ -n "$INPUT" ]; then
+            FILE="$INPUT"
+          else
+            FILE=$(ls -1 briefs/*.md 2>/dev/null | sort | tail -n 1)
+          fi
+          if [ -z "${FILE:-}" ] || [ ! -f "$FILE" ]; then
+            echo "No brief file found." >&2
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Selected: $FILE"
+
+      - name: Render Markdown to HTML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet markdown
+          python3 - <<'PY'
+          import markdown, pathlib
+          src = pathlib.Path("${{ steps.brief.outputs.file }}").read_text()
+          html = markdown.markdown(src, extensions=["tables", "fenced_code"])
+          pathlib.Path("body.html").write_text(html)
+          PY
+
+      - name: Send via Resend
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+        run: |
+          set -euo pipefail
+          FROM="${MAIL_FROM:-onboarding@resend.dev}"
+          PAYLOAD=$(jq -n \
+            --arg from "Daily Market Brief <$FROM>" \
+            --arg to "shgoetze@gmail.com" \
+            --arg subject "Daily Market Brief" \
+            --rawfile html body.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+          curl -fsS -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
