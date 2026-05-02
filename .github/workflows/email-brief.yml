@@ -1,0 +1,60 @@
+# Emails the most recent file in briefs/ to shgoetze@gmail.com.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   MAIL_USERNAME  Gmail address used to send (e.g. you@gmail.com)
+#   MAIL_PASSWORD  Google App Password (NOT your account password)
+#                  Create one at https://myaccount.google.com/apppasswords
+#
+# Triggers:
+#   - Push to main that touches briefs/*.md (auto-send on merge)
+#   - Manual run via "Run workflow" (optionally pass a specific brief path)
+
+name: Email Daily Brief
+
+on:
+  push:
+    branches: [main]
+    paths: ['briefs/*.md']
+  workflow_dispatch:
+    inputs:
+      brief_path:
+        description: 'Path to a specific brief (defaults to most recent in briefs/)'
+        required: false
+        default: ''
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve brief file
+        id: brief
+        run: |
+          set -euo pipefail
+          INPUT="${{ github.event.inputs.brief_path }}"
+          if [ -n "$INPUT" ]; then
+            FILE="$INPUT"
+          else
+            FILE=$(ls -1 briefs/*.md 2>/dev/null | sort | tail -n 1)
+          fi
+          if [ -z "${FILE:-}" ] || [ ! -f "$FILE" ]; then
+            echo "No brief file found." >&2
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Selected: $FILE"
+
+      - name: Send email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: Daily Market Brief
+          to: shgoetze@gmail.com
+          from: Daily Market Brief <${{ secrets.MAIL_USERNAME }}>
+          body: file://${{ steps.brief.outputs.file }}
+          convert_markdown: true
