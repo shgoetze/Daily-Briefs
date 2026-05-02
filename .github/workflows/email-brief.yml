@@ -1,9 +1,13 @@
-# Emails the most recent file in briefs/ to shgoetze@gmail.com.
+# Emails the most recent file in briefs/ to shgoetze@gmail.com via Resend.
 #
-# Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   MAIL_USERNAME  Gmail address used to send (e.g. you@gmail.com)
-#   MAIL_PASSWORD  Google App Password (NOT your account password)
-#                  Create one at https://myaccount.google.com/apppasswords
+# Required repository secret (Settings -> Secrets and variables -> Actions):
+#   RESEND_API_KEY  API key from https://resend.com/api-keys (send-only scope recommended)
+#
+# Optional repository secret:
+#   MAIL_FROM       Verified sender address on your Resend domain.
+#                   If unset, defaults to onboarding@resend.dev, which only
+#                   delivers to the email that owns the Resend account.
+#                   Sign up to Resend with shgoetze@gmail.com to use the default.
 #
 # Triggers:
 #   - Push to main that touches briefs/*.md (auto-send on merge)
@@ -45,16 +49,31 @@ jobs:
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "Selected: $FILE"
 
-      - name: Send email
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: Daily Market Brief
-          to: shgoetze@gmail.com
-          from: Daily Market Brief <${{ secrets.MAIL_USERNAME }}>
-          body: file://${{ steps.brief.outputs.file }}
-          convert_markdown: true
+      - name: Render Markdown to HTML
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet markdown
+          python3 - <<'PY'
+          import markdown, pathlib
+          src = pathlib.Path("${{ steps.brief.outputs.file }}").read_text()
+          html = markdown.markdown(src, extensions=["tables", "fenced_code"])
+          pathlib.Path("body.html").write_text(html)
+          PY
+
+      - name: Send via Resend
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+        run: |
+          set -euo pipefail
+          FROM="${MAIL_FROM:-onboarding@resend.dev}"
+          PAYLOAD=$(jq -n \
+            --arg from "Daily Market Brief <$FROM>" \
+            --arg to "shgoetze@gmail.com" \
+            --arg subject "Daily Market Brief" \
+            --rawfile html body.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+          curl -fsS -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
